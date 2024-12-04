@@ -1,69 +1,50 @@
-# syntax=docker/dockerfile:1
-# check=error=true
+# Stage 1: Build dependencies
+FROM ruby:3.3.6-alpine3.20 AS builder
 
-# This Dockerfile is designed for production, not development. Use with Kamal or build'n'run by hand:
-# docker build -t roadtok8s_rails .
-# docker run -d -p 80:80 -e RAILS_MASTER_KEY=<value from config/master.key> --name roadtok8s_rails roadtok8s_rails
+# Set the working directory inside the container
+WORKDIR /app
 
-# For a containerized dev environment, see Dev Containers: https://guides.rubyonrails.org/getting_started_with_devcontainer.html
+# Install build dependencies
+RUN apk add --no-cache \
+  build-base \
+  sqlite-dev \
+  git
 
-# Make sure RUBY_VERSION matches the Ruby version in .ruby-version
-ARG RUBY_VERSION=3.3.6
-FROM docker.io/library/ruby:$RUBY_VERSION-slim AS base
+# Set environment variables for production
+ENV RAILS_ENV=production
+ENV BUNDLE_WITHOUT="development:test"
+ENV BUNDLE_PATH=/app/vendor/bundle
 
-# Rails app lives here
-WORKDIR /rails
-
-# Install base packages
-RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y curl libjemalloc2 libvips sqlite3 && \
-    rm -rf /var/lib/apt/lists /var/cache/apt/archives
-
-# Set production environment
-ENV RAILS_ENV="production" \
-    BUNDLE_DEPLOYMENT="1" \
-    BUNDLE_PATH="/usr/local/bundle" \
-    BUNDLE_WITHOUT="development"
-
-# Throw-away build stage to reduce size of final image
-FROM base AS build
-
-# Install packages needed to build gems
-RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y build-essential git pkg-config && \
-    rm -rf /var/lib/apt/lists /var/cache/apt/archives
-
-# Install application gems
+# Copy Gemfile and Gemfile.lock for dependency installation
 COPY Gemfile Gemfile.lock ./
-RUN bundle install && \
-    rm -rf ~/.bundle/ "${BUNDLE_PATH}"/ruby/*/cache "${BUNDLE_PATH}"/ruby/*/bundler/gems/*/.git && \
-    bundle exec bootsnap precompile --gemfile
 
-# Copy application code
+# Install Ruby gems
+RUN bundle install
+
+# Stage 2: Minimal runtime image
+FROM ruby:3.3.6-alpine3.20
+
+# Set the working directory inside the container
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apk add --no-cache \
+  sqlite-libs \
+  tzdata
+
+# Set environment variables for production
+ENV RAILS_ENV=production
+ENV BUNDLE_WITHOUT="development:test"
+ENV BUNDLE_PATH=/app/vendor/bundle
+
+# Copy the application and installed gems from the builder stage
+COPY --from=builder /app /app
+
+# Copy the rest of the application files
 COPY . .
 
-# Precompile bootsnap code for faster boot times
-RUN bundle exec bootsnap precompile app/ lib/
+# Expose the port that Rails will run on
+EXPOSE 3000
 
-
-
-
-# Final stage for app image
-FROM base
-
-# Copy built artifacts: gems, application
-COPY --from=build "${BUNDLE_PATH}" "${BUNDLE_PATH}"
-COPY --from=build /rails /rails
-
-# Run and own only the runtime files as a non-root user for security
-RUN groupadd --system --gid 1000 rails && \
-    useradd rails --uid 1000 --gid 1000 --create-home --shell /bin/bash && \
-    chown -R rails:rails db log storage tmp
-USER 1000:1000
-
-# Entrypoint prepares the database.
-ENTRYPOINT ["/rails/bin/docker-entrypoint"]
-
-# Start server via Thruster by default, this can be overwritten at runtime
-EXPOSE 80
-CMD ["./bin/thrust", "./bin/rails", "server"]
+# Set the default command to start the Rails server
+CMD ["/app/bin/rails", "server", "-b", "0.0.0.0"]
