@@ -1,0 +1,19 @@
+networks:
+  rails_network:
+    driver: bridge
+    name: rails_network
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: roadtok8s-rails-web
+    container_name: roadtok8s-rails-web
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - RAILS_MASTER_KEY=${RAILS_MASTER_KEY}
+    networks:
+      - rails_network
